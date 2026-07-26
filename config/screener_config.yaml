@@ -1,0 +1,12 @@
+filters:
+  roe_min: {column: return_on_equity_pct, op: gte}
+  de_max: {column: debt_to_equity, op: lte}
+  fcf_min: {column: free_cash_flow_cr, op: gte}
+  revenue_cagr_5yr_min: {column: revenue_cagr_5yr, op: gte}
+  pat_cagr_5yr_min: {column: pat_cagr_5yr, op: gte}
+  opm_min: {column: operating_profit_margin_pct, op: gte}
+  icr_min: {column: interest_coverage, op: gte}
+  net_profit_min: {column: net_profit, op: gte}
+  eps_cagr_min: {column: eps_cagr_5yr, op: gte}
+  asset_turnover_min: {column: asset_turnover, op: gte}
+  sales_min: {column: sales, op: gte}
