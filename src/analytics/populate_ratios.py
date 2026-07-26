@@ -3,13 +3,17 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src" / "analytics"))
+sys.path.insert(0, str(ROOT / "src" / "etl"))
+
 from ratios import return_on_equity, debt_to_equity, interest_coverage, asset_turnover
 from cagr import compute_cagr
 from cashflow_kpis import free_cash_flow, capital_allocation_pattern
+from normalizer import normalize_year
 
-DB_PATH = str(Path(__file__).resolve().parents[2] / "data" / "nifty100.db")
-PATCH_SQL = str(Path(__file__).resolve().parents[2] / "src" / "etl" / "add_ratio_columns.sql")
+DB_PATH = str(ROOT / "data" / "nifty100.db")
+PATCH_SQL = str(ROOT / "src" / "etl" / "add_ratio_columns.sql")
 
 def get_company_series(conn, table, company_id):
     rows = conn.execute(f"SELECT * FROM {table} WHERE company_id=? ORDER BY year", (company_id,)).fetchall()
@@ -26,7 +30,13 @@ def main():
 
     financial_sectors = {r[0] for r in conn.execute(
         "SELECT company_id FROM sectors WHERE broad_sector='Financials'").fetchall()}
+    fr_rows = conn.execute("SELECT rowid, company_id, year FROM financial_ratios").fetchall()
 
+    fr_lookup = {}
+    for rowid, cid_raw, yr_raw in fr_rows:
+        key = (cid_raw, normalize_year(yr_raw))
+        fr_lookup.setdefault(key, []).append(rowid)
+        
     companies = [r[0] for r in conn.execute("SELECT id FROM companies").fetchall()]
     capital_rows = []
 
@@ -74,16 +84,17 @@ def main():
             de_score = 100 if de == 0 else max(0, 100 - de * 20)
             composite = 0.3*roe_score + 0.25*fcf_score + 0.25*roe_score + 0.20*de_score
 
-            conn.execute("""
-                UPDATE financial_ratios SET
-                    return_on_equity_pct=?, debt_to_equity=?, interest_coverage=?, asset_turnover=?,
-                    free_cash_flow_cr=?, revenue_cagr_5yr=?, revenue_cagr_5yr_flag=?,
-                    pat_cagr_5yr=?, pat_cagr_5yr_flag=?, eps_cagr_5yr=?, eps_cagr_5yr_flag=?,
-                    composite_quality_score=?, icr_label=?, high_leverage_flag=?
-                WHERE company_id=? AND year=?
-            """, (roe, de, icr, at, fcf, rev_cagr, rev_flag, pat_cagr, pat_flag,
-                  eps_cagr, eps_flag, composite, icr_label, int(high_lev_flag),
-                  cid, year))
+            target_rowids = fr_lookup.get((cid, year), [])
+            for rowid in target_rowids:
+                conn.execute("""
+                    UPDATE financial_ratios SET
+                        return_on_equity_pct=?, debt_to_equity=?, interest_coverage=?, asset_turnover=?,
+                        free_cash_flow_cr=?, revenue_cagr_5yr=?, revenue_cagr_5yr_flag=?,
+                        pat_cagr_5yr=?, pat_cagr_5yr_flag=?, eps_cagr_5yr=?, eps_cagr_5yr_flag=?,
+                        composite_quality_score=?, icr_label=?, high_leverage_flag=?
+                    WHERE rowid=?
+                """, (roe, de, icr, at, fcf, rev_cagr, rev_flag, pat_cagr, pat_flag,
+                      eps_cagr, eps_flag, composite, icr_label, int(high_lev_flag), rowid))
 
     conn.commit()
 
