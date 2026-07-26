@@ -1,13 +1,14 @@
 import sqlite3
 import os
 import sys
+import csv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src" / "analytics"))
 sys.path.insert(0, str(ROOT / "src" / "etl"))
 
-from ratios import return_on_equity, debt_to_equity, interest_coverage, asset_turnover
+from ratios import return_on_equity, debt_to_equity, interest_coverage, asset_turnover, return_on_capital_employed
 from cagr import compute_cagr
 from cashflow_kpis import free_cash_flow, capital_allocation_pattern
 from normalizer import normalize_year
@@ -26,7 +27,7 @@ def main():
         with open(PATCH_SQL) as f:
             conn.executescript(f.read())
     except sqlite3.OperationalError:
-        pass  # columns already added on a re-run
+        pass
 
     financial_sectors = {r[0] for r in conn.execute(
         "SELECT company_id FROM sectors WHERE broad_sector='Financials'").fetchall()}
@@ -36,7 +37,7 @@ def main():
     for rowid, cid_raw, yr_raw in fr_rows:
         key = (cid_raw, normalize_year(yr_raw))
         fr_lookup.setdefault(key, []).append(rowid)
-        
+
     companies = [r[0] for r in conn.execute("SELECT id FROM companies").fetchall()]
     capital_rows = []
 
@@ -56,6 +57,8 @@ def main():
                 continue
 
             roe = return_on_equity(row["net_profit"], bsr["equity_capital"], bsr["reserves"])
+            ebit = (row["operating_profit"] or 0) - (row["depreciation"] or 0)
+            roce = return_on_capital_employed(ebit, bsr["equity_capital"], bsr["reserves"], bsr["borrowings"], is_fin)
             de, high_lev_flag = debt_to_equity(bsr["borrowings"], bsr["equity_capital"], bsr["reserves"], is_fin)
             if row["operating_profit"] is not None and row["interest"] is not None:
                 icr, icr_label, _ = interest_coverage(row["operating_profit"], row["other_income"], row["interest"])
@@ -63,7 +66,7 @@ def main():
                 icr, icr_label = None, None
             at = asset_turnover(row["sales"], bsr["total_assets"])
 
-            fcf, cfo_sign = None, None
+            fcf = None
             if cfr and cfr["operating_activity"] is not None and cfr["investing_activity"] is not None and cfr["financing_activity"] is not None:
                 fcf = free_cash_flow(cfr["operating_activity"], cfr["investing_activity"])
                 cfo_sign, cfi_sign, cff_sign, pattern_label = capital_allocation_pattern(
@@ -88,19 +91,18 @@ def main():
             for rowid in target_rowids:
                 conn.execute("""
                     UPDATE financial_ratios SET
-                        return_on_equity_pct=?, debt_to_equity=?, interest_coverage=?, asset_turnover=?,
+                        return_on_equity_pct=?, return_on_capital_employed_pct=?, debt_to_equity=?, interest_coverage=?, asset_turnover=?,
                         free_cash_flow_cr=?, revenue_cagr_5yr=?, revenue_cagr_5yr_flag=?,
                         pat_cagr_5yr=?, pat_cagr_5yr_flag=?, eps_cagr_5yr=?, eps_cagr_5yr_flag=?,
                         composite_quality_score=?, icr_label=?, high_leverage_flag=?
                     WHERE rowid=?
-                """, (roe, de, icr, at, fcf, rev_cagr, rev_flag, pat_cagr, pat_flag,
+                """, (roe, roce, de, icr, at, fcf, rev_cagr, rev_flag, pat_cagr, pat_flag,
                       eps_cagr, eps_flag, composite, icr_label, int(high_lev_flag), rowid))
 
     conn.commit()
 
-    os.makedirs("output", exist_ok=True)
-    import csv
-    with open("output/capital_allocation.csv", "w", newline="") as f:
+    os.makedirs(str(ROOT / "output"), exist_ok=True)
+    with open(str(ROOT / "output" / "capital_allocation.csv"), "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["company_id", "year", "cfo_sign", "cfi_sign", "cff_sign", "pattern_label"])
         writer.writerows(capital_rows)
